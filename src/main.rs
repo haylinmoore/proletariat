@@ -1,3 +1,4 @@
+#![forbid(rust_2018_idioms)]
 use v8;
 use std::time::Duration;
 use std::convert::Infallible;
@@ -12,10 +13,60 @@ struct Request {
     body: Option<String>
 }
 
+fn generate_v8_string<'a>(
+    scope: &mut v8::HandleScope<'a>,
+    str: &str 
+) -> v8::Local<'a, v8::String> {
+    return v8::String::new(scope,str).unwrap();
+}
+
+fn create_v8_request_object<'a>(
+    scope: &mut v8::HandleScope<'a>,
+    req: &Request
+) -> v8::Local<'a, v8::Object> {
+    let null = v8::null(scope);
+    let values_url = v8::String::new(scope,&req.path.clone()).unwrap();
+    let names_url = generate_v8_string(scope, "url"); 
+
+    return v8::Object::with_prototype_and_properties(scope, null.into(), &[names_url.into()], &[values_url.into()]);
+}
+
+fn prom_response(
+    scope: &mut v8::HandleScope<'_>,
+    args: v8::FunctionCallbackArguments<'_>,
+    mut _retval: v8::ReturnValue<'_>,
+) {
+    if args.get(0).is_object() {
+        get_response(scope, Option::from(args.get(0)));
+    }
+}
+fn get_response(
+    scope: &mut v8::HandleScope<'_>,
+    res: Option<v8::Local<'_, v8::Value>>,
+) {
+    match res {
+        Some(d) => {
+            if d.is_promise() {
+                let prom = v8::Local::<v8::Promise>::try_from(d).unwrap();
+                let prom_then = v8::Function::new(scope, prom_response).unwrap(); 
+                prom.then(scope, prom_then);
+            }
+            else if d.is_object() {
+                let resp = d.to_object(scope).unwrap();
+                send_response_object(scope, resp);
+            }
+
+        }
+        None => {
+            print!("Code failed to execute.");
+        }
+    } 
+}
+
 fn add_event_listener(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut _retval: v8::ReturnValue,
+    scope: &mut v8::HandleScope<'_>,
+    args: v8::FunctionCallbackArguments<'_>,
+    mut _retval: v8::ReturnValue<'_>,
 ) {
     let req = scope.get_slot::<Request>().unwrap().clone();
     if args.get(1).is_function() {
@@ -24,39 +75,20 @@ fn add_event_listener(
 
         let null = v8::null(scope);
         // Request Object
-        let values_url = v8::String::new(scope,&req.path.clone()).unwrap();
-        let names_url = v8::String::new(scope,"url").unwrap();
-
-        let names_request = v8::String::new(scope,"request").unwrap();
-        let values_request = v8::Object::with_prototype_and_properties(scope, null.into(), &[names_url.into()], &[values_url.into()]);
         // Base Object
-        let values_type = v8::String::new(scope,"fetch").unwrap();
-        let names_type = v8::String::new(scope,"type").unwrap();
+        let values_type = generate_v8_string(scope, "fetch").into(); 
+        let names_type = generate_v8_string(scope, "type").into();
+        let names_request = generate_v8_string(scope,"request").into();
+        let values_request = create_v8_request_object(scope, &req);
 
-        let args = [v8::Object::with_prototype_and_properties(scope, null.into(), &[names_type.into(), names_request.into()], &[values_type.into(), values_request.into()]).into()];
+        let args = [v8::Object::with_prototype_and_properties(scope, null.into(), &[names_type, names_request], &[values_type, values_request.into()]).into()];
 
         let response = func.call(scope, null.into(), &args);
-        match response {
-            Some(res) => {
-                if res.is_promise() {
-                    print!("Returned promise\n");
-                    let res = v8::Local::<v8::Promise>::try_from(res).unwrap();
-                }
-                else if res.is_object() {
-                    print!("Returned Object\n");
-                    let resp = res.to_object(scope).unwrap();
-                    send_response_object(scope, resp);
-                }
-
-            }
-            None => {
-                print!("Code failed to execute.");
-            }
-        } 
+        get_response(scope, response);
     }
 }
 
-fn send_response_object(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>) {
+fn send_response_object(scope: &mut v8::HandleScope<'_>, obj: v8::Local<'_, v8::Object>) {
     let mut user_response: String = String::from("No response given.");
     let body_string = v8::String::new(scope, "body").unwrap();
     let body = obj.get(scope, body_string.into());
@@ -86,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // This is the `Service` that will handle the connection.
         // `service_fn` is a helper to convert a function that
         // returns a Response into a `Service`.
-        async { Ok::<_, Infallible>(service_fn(hello)) }
+        async { Ok::<_, Infallible>(service_fn(handle_request)) }
     });
 
     let addr = ([127, 0, 0, 1], 3000).into();
@@ -99,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-async fn hello(h_req: hyper::Request<hyper::Body>) -> Result<hyper::Response<hyper::Body>, Infallible> {
+async fn handle_request(h_req: hyper::Request<hyper::Body>) -> Result<hyper::Response<hyper::Body>, Infallible> {
     let isolate = &mut v8::Isolate::new(Default::default());
     let scope = &mut v8::HandleScope::new(isolate);
     let req = Request {
@@ -150,8 +182,11 @@ async fn hello(h_req: hyper::Request<hyper::Body>) -> Result<hyper::Response<hyp
     scope.set_slot(sender);
 
     let user_code = String::from("
-    function handleRequest(request){
-        return new Response('Hello ' + request.url);
+    async function generateResponse(request){
+        return new Response(`Hello ${request.url} from a Promise!`);
+    }
+    async function handleRequest(request){
+        return await generateResponse(request); 
     }
 
     addEventListener('fetch', event => {
