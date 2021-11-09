@@ -45,7 +45,7 @@ async fn handle_request(mut hyper_req: hyper::Request<hyper::Body>) -> Result<hy
     code = match host.nth(0).unwrap() {
         "localhost4" => String::from("
 async function generateResponse(request){
-    return new Response(JSON.stringify(request), {headers: {'x-server': 'test'}});
+    return new Response(JSON.stringify(request), {headers: {'x-server': 'test', 'other': 'pizza'}});
 }
 async function handleRequest(request){
     return await generateResponse(request); 
@@ -68,7 +68,7 @@ addEventListener('fetch', event => {
 
     match response {
         Ok(data) => {
-            return Ok(hyper::Response::new(hyper::Body::from(data)));
+            return Ok(data);
         }
         Err(_) => {
             return Ok(hyper::Response::new(hyper::Body::from("Execution timeout reached")));

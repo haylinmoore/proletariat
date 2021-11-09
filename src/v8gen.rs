@@ -9,6 +9,13 @@ pub fn generate_v8_string<'a>(
     return v8::String::new(scope,str).unwrap();
 }
 
+pub fn generate_v8_int<'a>(
+    scope: &mut v8::HandleScope<'a>,
+    num: i32 
+) -> v8::Local<'a, v8::Integer> {
+    return v8::Integer::new(scope,num);
+}
+
 fn create_v8_request_object<'a>(
     scope: &mut v8::HandleScope<'a>,
     req: &hyper::Request<()>
@@ -94,30 +101,51 @@ fn add_event_listener(
     }
 }
 
-fn send_response_object(scope: &mut v8::HandleScope<'_>, obj: v8::Local<'_, v8::Object>) {
-    let mut user_response: String = String::from("No response given.");
-    let body_string = v8::String::new(scope, "body").unwrap();
-    let body = obj.get(scope, body_string.into());
-    let headers_string = generate_v8_string(scope, "headers");
-    let headers = obj.get(scope, headers_string.into()).unwrap();
-    println!("{}", v8::json::stringify(scope, headers).unwrap().to_rust_string_lossy(scope));
-    match body {
-        Some(s) => {
-            user_response = s.to_rust_string_lossy(scope);
-        }
-        None => {
+pub fn object_extract_item<'a>(
+    scope: &mut v8::HandleScope<'a>,
+    obj: v8::Local<'_, v8::Object>,
+    name: &str 
+) -> v8::Local<'a, v8::Value> {
+    let name = v8::String::new(scope,name).unwrap();
+    return obj.get(scope, name.into()).unwrap();
+}
 
+fn send_response_object(scope: &mut v8::HandleScope<'_>, obj: v8::Local<'_, v8::Object>) {
+    let null = v8::null(scope);
+    let user_response = object_extract_item(scope, obj, "body").to_string(scope).unwrap().to_rust_string_lossy(scope);
+    let body = hyper::Body::from(user_response);
+    let mut response = hyper::Response::new(body);
+    {
+        let headers = object_extract_item(scope, obj, "headers").to_object(scope).unwrap(); 
+        let entries = v8::Local::<v8::Function>::try_from(object_extract_item(scope, headers, "entries")).unwrap();
+        let result = entries.call(scope, headers.into(), &[]).unwrap().to_object(scope).unwrap();
+        let header_vals = v8::Local::<v8::Array>::try_from(object_extract_item(scope, result, "items")).unwrap();
+        let heads = response.headers_mut();
+
+        let mut i = 0;
+        let mut finished = false;
+        loop {
+            let val = header_vals.get_index(scope, i).unwrap();
+            if (val.is_undefined()){
+                break;
+            } // End of array
+            let val = val.to_object(scope).unwrap();
+            let key = val.get_index(scope, 0).unwrap().to_rust_string_lossy(scope);
+            let value = val.get_index(scope, 1).unwrap().to_rust_string_lossy(scope);
+            heads.insert(hyper::header::HeaderName::from_lowercase(&key.as_bytes()).unwrap(), http::HeaderValue::from_str(&value).unwrap());
+            i+=1;
         }
+
     }
-    scope.get_slot::<Sender<String>>().unwrap().send(
-        user_response 
+    scope.get_slot::<Sender<hyper::Response<hyper::Body>>>().unwrap().send(
+        response
     ).unwrap();
 }
 
 pub fn create_v8_environment(
     hyper_req: hyper::Request<hyper::Body>,
     user_code: String
-) -> Receiver<String> {
+) -> Receiver<hyper::Response<hyper::Body>> {
 
     let isolate = &mut v8::Isolate::new(Default::default());
     let scope = &mut v8::HandleScope::new(isolate);
@@ -158,13 +186,8 @@ pub fn create_v8_environment(
                     var value = items.shift();
                     return { done: value === undefined, value: value };
                 },
+                items: items
             };
-        
-            if (support.iterable) {
-                iterator[Symbol.iterator] = function () {
-                    return iterator;
-                };
-            }
         
             return iterator;
         }
@@ -293,7 +316,7 @@ pub fn create_v8_environment(
 	// there is a bit of promotion of this object to become the global scope
 	let context = v8::Context::new_from_template(scope, myglobals);
     let scope = &mut v8::ContextScope::new(scope, context);
-    let (sender, receiver): (Sender<String>, Receiver<String>) = mpsc::channel();
+    let (sender, receiver): (Sender<hyper::Response<hyper::Body>>, Receiver<hyper::Response<hyper::Body>>) = mpsc::channel();
     scope.set_slot(sender);
 
     let code = v8::String::new(scope, &format!("{}{}", prepended_js, user_code).to_owned()).unwrap();
