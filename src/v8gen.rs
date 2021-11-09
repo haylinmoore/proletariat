@@ -2,8 +2,6 @@ use v8;
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
 
-use crate::response;
-
 pub fn generate_v8_string<'a>(
     scope: &mut v8::HandleScope<'a>,
     str: &str 
@@ -100,6 +98,9 @@ fn send_response_object(scope: &mut v8::HandleScope<'_>, obj: v8::Local<'_, v8::
     let mut user_response: String = String::from("No response given.");
     let body_string = v8::String::new(scope, "body").unwrap();
     let body = obj.get(scope, body_string.into());
+    let headers_string = generate_v8_string(scope, "headers");
+    let headers = obj.get(scope, headers_string.into()).unwrap();
+    println!("{}", v8::json::stringify(scope, headers).unwrap().to_rust_string_lossy(scope));
     match body {
         Some(s) => {
             user_response = s.to_rust_string_lossy(scope);
@@ -137,11 +138,11 @@ pub fn create_v8_environment(
         req.into()
     );
 
-    let response_class = response::generate(scope);
-    myglobals.set( 
-        generate_v8_string(scope, "Response").into(), 
-        response_class.into()
-    );
+    // let response_class = response::generate(scope);
+    // myglobals.set( 
+    //     generate_v8_string(scope, "Response").into(), 
+    //     response_class.into()
+    // );
 
     let prepended_js ="
         class Request {
@@ -150,6 +151,131 @@ pub fn create_v8_environment(
                 this.options = options || {};
             }
         }
+
+        function iteratorFor(items) {
+            var iterator = {
+                next: function () {
+                    var value = items.shift();
+                    return { done: value === undefined, value: value };
+                },
+            };
+        
+            if (support.iterable) {
+                iterator[Symbol.iterator] = function () {
+                    return iterator;
+                };
+            }
+        
+            return iterator;
+        }
+
+        class Headers {
+            constructor(headers){
+                this.map = {};
+                if (headers instanceof Headers) {
+                    headers.forEach(function (value, name) {
+                        this.append(name, value);
+                    }, this);
+                } else if (Array.isArray(headers)) {
+                    headers.forEach(function (header) {
+                        this.append(header[0], header[1]);
+                    }, this);
+                } else if (headers) {
+                    Object.getOwnPropertyNames(headers).forEach(function (name) {
+                        this.append(name, headers[name]);
+                    }, this);
+                }
+            }
+
+            append(name, value) {
+                name = this.normalizeName(name);
+                value = this.normalizeValue(value);
+                var oldValue = this.map[name];
+                this.map[name] = oldValue ? oldValue + ', ' + value : value;
+            } 
+
+            delete(name){
+                delete this.map[this.normalizeName(name)];
+            }
+
+            get(name) {
+                name = this.normalizeName(name);
+                return this.has(name) ? this.map[name] : null;
+            }
+
+            has(name) {
+                return this.map.hasOwnProperty(this.normalizeName(name));
+            }
+
+            set(name, value) {
+                this.map[this.normalizeName(name)] = this.normalizeValue(value);
+            }
+
+            forEach(callback, thisArg) {
+                for (var name in this.map) {
+                    if (this.map.hasOwnProperty(name)) {
+                        callback.call(thisArg, this.map[name], name, this);
+                    }
+                }
+            }
+
+            keys() {
+                var items = [];
+                this.forEach(function (value, name) {
+                    items.push(name);
+                });
+                return iteratorFor(items);
+            };
+
+            values() {
+                var items = [];
+                this.forEach(function (value) {
+                    items.push(value);
+                });
+                return iteratorFor(items);
+            };
+
+            entries() {
+                var items = [];
+                this.forEach(function (value, name) {
+                    items.push([name, value]);
+                });
+                return iteratorFor(items);
+            };
+
+            normalizeValue(value) {
+                if (typeof value !== 'string') {
+                    value = String(value);
+                }
+                return value;
+            }
+
+            normalizeName(name) {
+                if (typeof name !== 'string') {
+                    name = String(name);
+                }
+                if (/[^a-z0-9\\-#$%&'*+.^_`|~!]/i.test(name) || name === '') {
+                    throw new TypeError('Invalid character in header field name: \"' + name + '\"');
+                }
+                return name.toLowerCase();
+            }
+        }
+
+        class Response {
+            constructor(body, options){
+                if (options == undefined) {
+                    options = {};
+                }
+                this.type = 'default'
+                this.status = options.status === undefined ? 200 : options.status
+                this.ok = this.status >= 200 && this.status < 300
+                this.statusText = options.statusText === undefined ? '' : '' + options.statusText
+                this.url = options.url || ''
+                this.headers = new Headers(options.headers || {});
+                this.body = body;
+            }
+        }
+
     ";
 
 

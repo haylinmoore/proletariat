@@ -5,7 +5,6 @@ use std::convert::Infallible;
 use hyper::{Server};
 use hyper::service::{make_service_fn, service_fn};
 
-mod response;
 mod v8gen;
 
 #[tokio::main]
@@ -46,19 +45,19 @@ async fn handle_request(mut hyper_req: hyper::Request<hyper::Body>) -> Result<hy
     code = match host.nth(0).unwrap() {
         "localhost4" => String::from("
 async function generateResponse(request){
-return new Response(JSON.stringify(request));
+    return new Response(JSON.stringify(request), {headers: {'x-server': 'test'}});
 }
 async function handleRequest(request){
-return await generateResponse(request); 
+    return await generateResponse(request); 
 }
 
 addEventListener('fetch', event => {
-return handleRequest(event.request); 
+    return handleRequest(event.request); 
 });
 "),
         _ => String::from("
 addEventListener('fetch', event => {
-return new Response('Unknown host header'); 
+    return new Response('Unknown host header'); 
 });
         ")
     };
