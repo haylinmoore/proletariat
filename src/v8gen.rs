@@ -2,13 +2,9 @@ use v8;
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
 
-#[derive(Clone)]
-struct Request {
-    path: String,
-    body: Option<String>
-}
+use crate::response;
 
-fn generate_v8_string<'a>(
+pub fn generate_v8_string<'a>(
     scope: &mut v8::HandleScope<'a>,
     str: &str 
 ) -> v8::Local<'a, v8::String> {
@@ -17,10 +13,10 @@ fn generate_v8_string<'a>(
 
 fn create_v8_request_object<'a>(
     scope: &mut v8::HandleScope<'a>,
-    req: &Request
+    req: &hyper::Request<()>
 ) -> v8::Local<'a, v8::Object> {
     let null = v8::null(scope);
-    let values_url = v8::String::new(scope,&req.path.clone()).unwrap();
+    let values_url = v8::String::new(scope,req.uri().path()).unwrap();
     let names_url = generate_v8_string(scope, "url"); 
 
     return v8::Object::with_prototype_and_properties(scope, null.into(), &[names_url.into()], &[values_url.into()]);
@@ -58,12 +54,29 @@ fn get_response(
     } 
 }
 
+fn hyper_request_cloner(
+    hyper_req: &hyper::Request<hyper::Body>,
+) -> hyper::Request<()> {
+    let (method, uri, version, headers, _extenstions) = (hyper_req.method().clone(), hyper_req.uri().clone(), hyper_req.version().clone(), hyper_req.headers().clone(), http::Extensions::new());
+    let mut req = hyper::Request::builder().uri(uri).version(version).method(method).body(()).unwrap();
+    let head = req.headers_mut();
+    headers.iter().for_each(
+        |(k,v)| {
+            head.insert(k,v.clone()); 
+            ()
+        }
+    );
+
+    return req;
+}
+
 fn add_event_listener(
     scope: &mut v8::HandleScope<'_>,
     args: v8::FunctionCallbackArguments<'_>,
     mut _retval: v8::ReturnValue<'_>,
 ) {
-    let req = scope.get_slot::<Request>().unwrap().clone();
+    let req = scope.get_slot::<hyper::Request<hyper::Body>>().unwrap().clone();
+    let req = hyper_request_cloner(&req);
     if args.get(1).is_function() {
         let func_obj = args.get(1).to_object(scope).unwrap();
         let func = v8::Local::<v8::Function>::try_from(func_obj).unwrap();
@@ -107,12 +120,8 @@ pub fn create_v8_environment(
 
     let isolate = &mut v8::Isolate::new(Default::default());
     let scope = &mut v8::HandleScope::new(isolate);
-    let req = Request {
-        path: hyper_req.uri().path().to_owned().clone(),
-        body: None
-    };
-
-    scope.set_slot(req.clone());
+    
+    scope.set_slot(hyper_req);
 
     let context = v8::Context::new(scope);
     let scope = &mut v8::ContextScope::new(scope, context);
@@ -128,12 +137,13 @@ pub fn create_v8_environment(
         req.into()
     );
 
+    let response_class = response::generate(scope);
+    myglobals.set( 
+        generate_v8_string(scope, "Response").into(), 
+        response_class.into()
+    );
+
     let prepended_js ="
-        class Response {
-            constructor(body){
-                this.body = body || '';
-            }
-        }
         class Request {
             constructor(url, options){
                 this.url = url;

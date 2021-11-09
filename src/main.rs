@@ -2,11 +2,10 @@
 use v8;
 use std::time::Duration;
 use std::convert::Infallible;
-use std::sync::mpsc::{Sender, Receiver};
-use std::sync::mpsc;
 use hyper::{Server};
 use hyper::service::{make_service_fn, service_fn};
 
+mod response;
 mod v8gen;
 
 #[tokio::main]
@@ -47,7 +46,7 @@ async fn handle_request(mut hyper_req: hyper::Request<hyper::Body>) -> Result<hy
     code = match host.nth(0).unwrap() {
         "localhost4" => String::from("
 async function generateResponse(request){
-return new Response(`Hello ${request.url} from a Promise!`);
+return new Response(JSON.stringify(request));
 }
 async function handleRequest(request){
 return await generateResponse(request); 

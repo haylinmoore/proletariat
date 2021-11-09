@@ -111,6 +111,7 @@ dependencies = [
 name = "hammy_workers"
 version = "0.1.0"
 dependencies = [
+ "http",
  "hyper",
  "tokio",
  "v8",
